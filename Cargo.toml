@@ -11,6 +11,9 @@ rust-version = "1.88.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+spotify-rodio = ["librespot/rodio-backend"]
+
 [dependencies]
 clap = { workspace = true }
 dialoguer = { version = "0.12.0", default-features = false }

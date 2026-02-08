@@ -14,6 +14,8 @@ use librespot::core::authentication::Credentials;
 use librespot::core::SpotifyUri;
 use librespot::playback::player::{Player as LibrespotPlayer, PlayerEvent};
 use librespot::playback::config::PlayerConfig;
+#[cfg(feature = "spotify-rodio")]
+use librespot::playback::config::AudioFormat;
 use librespot::playback::mixer::NoOpVolume;
 use librespot::playback::audio_backend::{Sink, SinkResult};
 use librespot::playback::decoder::AudioPacket;
@@ -64,7 +66,11 @@ impl SpotifyClient {
             let session = Session::new(session_config, None);
             session.connect(credentials, false).await.context("Failed to connect librespot")?;
 
+            #[cfg(feature = "spotify-rodio")]
+            let backend = || librespot::playback::audio_backend::rodio::mk_rodio(None, AudioFormat::default());
+            #[cfg(not(feature = "spotify-rodio"))]
             let backend = || Box::new(DummySink) as Box<dyn Sink>;
+
             let player = LibrespotPlayer::new(player_config, session.clone(), Box::new(NoOpVolume), backend);
             let event_rx = player.get_player_event_channel();
 
