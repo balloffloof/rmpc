@@ -15,7 +15,7 @@ use crate::{
     ctx::Ctx,
     mpd::{
         commands::{IdleEvent, State},
-        mpd_client::{MpdClient, SaveMode},
+        mpd_client::SaveMode,
     },
     shared::{
         album_art,
@@ -24,7 +24,6 @@ use crate::{
         id::{self, Id},
         keys::KeyResolver,
         macros::{modal, status_error, status_warn},
-        mpd_client_ext::MpdClientExt,
         mpd_query::{
             EXTERNAL_COMMAND,
             GLOBAL_QUEUE_UPDATE,
@@ -770,7 +769,7 @@ fn handle_idle_event(event: IdleEvent, ctx: &Ctx, result_ui_evs: &mut HashSet<Id
             ctx.query()
                 .id(GLOBAL_VOLUME_UPDATE)
                 .replace_id("volume")
-                .query(move |client| Ok(MpdQueryResult::Volume(client.get_volume()?)));
+                .query(move |client| Ok(MpdQueryResult::Volume(client.get_status()?.volume)));
         }
         IdleEvent::Mixer => {
             ctx.query().id(GLOBAL_STATUS_UPDATE).replace_id("status").query(move |client| {
@@ -800,7 +799,7 @@ fn handle_idle_event(event: IdleEvent, ctx: &Ctx, result_ui_evs: &mut HashSet<Id
             ctx.query()
                 .id(GLOBAL_QUEUE_UPDATE)
                 .replace_id("playlist")
-                .query(move |client| Ok(MpdQueryResult::Queue(client.playlist_info()?)));
+                .query(move |client| Ok(MpdQueryResult::Queue(Some(client.get_queue()?))));
 
             // Do not replace because we want to update currently loaded playlist if any
             // Also have to query every time because the current song position may change

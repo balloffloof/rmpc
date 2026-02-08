@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use crate::core::player::Player;
 use clap::Parser;
 use crossbeam::channel::unbounded;
 use ctx::Ctx;
@@ -56,6 +57,7 @@ mod core;
 mod ctx;
 mod mpd;
 mod shared;
+mod spotify;
 mod ui;
 
 fn main() -> Result<()> {
@@ -219,7 +221,7 @@ fn main() -> Result<()> {
             let mpd_info =
                 Client::init(config.address.clone(), config.password.clone(), "debug", None, false)
                     .and_then(|mut client| -> Result<_, _> {
-                        let version = client.version();
+                        let version = Player::version(&client);
                         let commands = client.commands().map(|c| c.0)?;
                         let not_commands = client.not_commands().map(|c| c.0)?;
                         Ok((version, commands, not_commands))
@@ -313,16 +315,27 @@ fn main() -> Result<()> {
                     CliConfig::default()
                 });
 
+            if matches!(cmd, Command::SpotifyLogin) {
+                let spotify = crate::spotify::auth::create_spotify_client()?;
+                crate::spotify::auth::login(&spotify)?;
+                return Ok(());
+            }
+
             let result = cmd.execute(&config)?;
-            let mut client = Client::init(
-                config.address.clone(),
-                config.password.clone(),
-                "main",
-                args.partition.partition,
-                args.partition.autocreate,
-            )?;
-            client.set_read_timeout(None)?;
-            result(&mut client)?;
+            let mut player: Box<dyn Player> = if args.spotify {
+                Box::new(crate::spotify::client::SpotifyClient::init()?)
+            } else {
+                let mut client = Client::init(
+                    config.address.clone(),
+                    config.password.clone(),
+                    "main",
+                    args.partition.partition,
+                    args.partition.autocreate,
+                )?;
+                client.set_read_timeout(None)?;
+                Box::new(client)
+            };
+            result(player.as_mut())?;
         }
         None => {
             let (worker_tx, worker_rx) = unbounded::<WorkRequest>();
@@ -330,7 +343,7 @@ fn main() -> Result<()> {
             let (event_tx, event_rx) = unbounded::<AppEvent>();
             logging::init(event_tx.clone()).expect("Logger to initialize");
 
-            log::debug!(rev = env!("VERGEN_GIT_DESCRIBE"); "rmpc started");
+            log::debug!(rev = option_env!("VERGEN_GIT_DESCRIBE").unwrap_or("unknown"); "rmpc started");
             std::thread::Builder::new()
                 .name("dependency_check".to_string())
                 .spawn(|| DEPENDENCIES.iter().for_each(|d| d.log()))?;
@@ -381,21 +394,26 @@ fn main() -> Result<()> {
             }
             event_tx.send(AppEvent::RequestRender).context("Failed to render first frame")?;
 
-            let mut client = Client::init(
-                config.address.clone(),
-                config.password.clone(),
-                "command",
-                args.partition.partition,
-                args.partition.autocreate,
-            )
-            .context("Failed to connect to MPD")?;
-            client.set_read_timeout(Some(config.mpd_read_timeout))?;
-            client.set_write_timeout(Some(config.mpd_write_timeout))?;
+            let mut player: Box<dyn Player> = if args.spotify {
+                Box::new(crate::spotify::client::SpotifyClient::init()?)
+            } else {
+                let mut client = Client::init(
+                    config.address.clone(),
+                    config.password.clone(),
+                    "command",
+                    args.partition.partition,
+                    args.partition.autocreate,
+                )
+                .context("Failed to connect to MPD")?;
+                client.set_read_timeout(Some(config.mpd_read_timeout))?;
+                client.set_write_timeout(Some(config.mpd_write_timeout))?;
+                Box::new(client)
+            };
 
             let tx_clone = event_tx.clone();
 
             let ctx = Ctx::try_new(
-                &mut client,
+                player.as_mut(),
                 config,
                 tx_clone,
                 worker_tx.clone(),
@@ -407,7 +425,7 @@ fn main() -> Result<()> {
             core::client::init(
                 client_rx.clone(),
                 event_tx.clone(),
-                client,
+                player,
                 Arc::clone(&ctx.config),
             )?;
             core::work::init(

@@ -104,6 +104,7 @@ pub enum PaneTypeFile {
         root_tag: String,
         separator: Option<String>,
     },
+    SpotifyDevices,
     Cava,
     Empty(),
 }
@@ -141,6 +142,7 @@ pub enum PaneType {
         root_tag: String,
         separator: Option<String>,
     },
+    SpotifyDevices,
     Cava,
     Empty,
 }
@@ -149,7 +151,7 @@ pub const PANES_ALLOWED_IN_BOTH_TAB_AND_LAYOUT: [PaneTypeDiscriminants; 2] =
     [PaneTypeDiscriminants::Property, PaneTypeDiscriminants::Empty];
 
 #[cfg(debug_assertions)]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
+pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 13] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -161,11 +163,12 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
     PaneTypeDiscriminants::Property,
     PaneTypeDiscriminants::Cava,
     PaneTypeDiscriminants::QueueHeader,
+    PaneTypeDiscriminants::SpotifyDevices,
     PaneTypeDiscriminants::Empty,
 ];
 
 #[cfg(not(debug_assertions))]
-pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
+pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 12] = [
     PaneTypeDiscriminants::AlbumArt,
     PaneTypeDiscriminants::Lyrics,
     PaneTypeDiscriminants::ProgressBar,
@@ -176,6 +179,7 @@ pub const UNFOSUSABLE_TABS: [PaneTypeDiscriminants; 11] = [
     PaneTypeDiscriminants::Property,
     PaneTypeDiscriminants::Cava,
     PaneTypeDiscriminants::QueueHeader,
+    PaneTypeDiscriminants::SpotifyDevices,
     PaneTypeDiscriminants::Empty,
 ];
 
@@ -226,6 +230,7 @@ impl TryFrom<PaneTypeFile> for PaneType {
             PaneTypeFile::Browser { root_tag: tag, separator } => {
                 PaneType::Browser { root_tag: tag, separator }
             }
+            PaneTypeFile::SpotifyDevices => PaneType::SpotifyDevices,
             PaneTypeFile::Cava => PaneType::Cava,
             PaneTypeFile::Empty() => PaneType::Empty,
         })

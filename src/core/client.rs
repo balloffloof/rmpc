@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{self, Write},
+    io::{self},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,15 +15,14 @@ use crossbeam::{
     select,
 };
 use drop_guard::ClientDropGuard;
+use parking_lot::Mutex;
 
 use crate::{
     config::Config,
+    core::player::Player,
     mpd::{
-        client::Client,
         commands::idle::IdleEvent,
         errors::MpdError,
-        mpd_client::MpdClient,
-        proto_client::ProtoClient,
     },
     shared::{
         events::{AppEvent, ClientRequest, WorkDone},
@@ -34,7 +33,7 @@ use crate::{
 pub fn init(
     client_rx: Receiver<ClientRequest>,
     event_tx: Sender<AppEvent>,
-    client: Client<'static>,
+    client: Box<dyn Player>,
     config: Arc<Config>,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
@@ -78,16 +77,16 @@ fn should_skip_request(buffer: &VecDeque<ClientRequest>, request: &ClientRequest
 fn client_task(
     request_rx: &Receiver<ClientRequest>,
     event_tx: &Sender<AppEvent>,
-    client: Client<'_>,
+    client: Box<dyn Player>,
     config: &Config,
 ) {
     // TODO probably a good idea to drop the channels on each reconnect loop
     let mut first_loop = true;
     let (client_received_tx, client_received_rx) = &bounded::<()>(0);
-    let (client_return_tx, client_return_rx) = &bounded::<Client<'_>>(1);
+    let (client_return_tx, client_return_rx) = &bounded::<Box<dyn Player>>(1);
 
     std::thread::scope(|s| {
-        client_return_tx.send(client).expect("Client init to succeed");
+        client_return_tx.send(client).expect("Player init to succeed");
 
         loop {
             log::trace!(first_loop; "Starting worker threads");
@@ -96,55 +95,54 @@ fn client_task(
 
             let _ = client_received_rx.try_iter().collect::<Vec<_>>();
 
-            log::trace!(first_loop; "Trying to get returned client");
+            log::trace!(first_loop; "Trying to get returned player");
             let mut client = match client_return_rx.recv() {
                 Ok(client) => client,
                 Err(err) => {
-                    log::error!(err:?; "Did not receive client from the return channel");
+                    log::error!(err:?; "Did not receive player from the return channel");
                     break;
                 }
             };
             let is_client_ok =
-                check_connection(first_loop, &mut client, request_rx, event_tx, config);
+                check_connection(first_loop, client.as_mut(), request_rx, event_tx, config);
             first_loop = false;
 
             if is_client_ok {
-                let mut client_write =
-                    client.stream.try_clone().expect("Client write clone to succeed");
+                let break_handle = Arc::new(Mutex::new(client.get_break_handle().expect("Failed to get break handle")));
+                let break_handle_work = Arc::clone(&break_handle);
 
                 let idle = Builder::new()
                     .name("idle".to_string())
                     .spawn_scoped(s, move || {
                         'outer: loop {
-                            log::trace!("Waiting to acquire client");
-                            let client = health!(client_return_rx.recv(), "Failed to receive client from request thread");
+                            log::trace!("Waiting to acquire player");
+                            let client = health!(client_return_rx.recv(), "Failed to receive player from request thread");
                             let mut client = ClientDropGuard::new(client_return_tx, client);
                             let timeout = config.mpd_idle_read_timeout_ms;
-                            log::trace!(timeout:?; "Successfully acquired client, setting read timeout");
+                            log::trace!(timeout:?; "Successfully acquired player, setting read timeout");
 
-                            health!(client.set_read_timeout(config.mpd_idle_read_timeout_ms), "Failed to set read timeout for idle client");
+                            health!(client.set_read_timeout(config.mpd_idle_read_timeout_ms), "Failed to set read timeout for idle player");
 
-                            log::trace!("Read timeout set, entering idle state");
-                            health!(client.enter_idle(None), "Failed to enter idle state");
-
-                            log::trace!("Sending client received confirmation");
-                            health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send client received confirmation");
+                            log::trace!("Sending player received confirmation");
+                            health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send player received confirmation");
 
                             log::trace!("Idle confirmation sent, waiting for events");
                             let events: Vec<IdleEvent> = loop {
-                                match client.read_response() {
+                                match client.wait_for_event() {
                                     Ok(events) => break events,
-                                    Err(MpdError::TimedOut(err)) => {
-                                        if !HEALTHY.load(Ordering::Relaxed) {
-                                            log::warn!(err:?; "Not healthy. Reading idle events timed out");
-                                            break 'outer;
+                                    Err(err) => match err.downcast_ref::<MpdError>() {
+                                        Some(MpdError::TimedOut(err)) => {
+                                            if !HEALTHY.load(Ordering::Relaxed) {
+                                                log::warn!(err:?; "Not healthy. Reading idle events timed out");
+                                                break 'outer;
+                                            }
                                         }
-                                    }
-                                    Err(err) => {
-                                        log::error!(err:?; "Encountered error while reading idle events");
-                                        HEALTHY.store(false, Ordering::Relaxed);
-                                        break 'outer
-                                    }
+                                        _ => {
+                                            log::error!(err:?; "Encountered error while reading idle events");
+                                            HEALTHY.store(false, Ordering::Relaxed);
+                                            break 'outer
+                                        }
+                                    },
                                 }
                             };
 
@@ -156,9 +154,9 @@ fn client_task(
                                 }
                             }
 
-                            log::trace!("Stopping idle, dropping client");
+                            log::trace!("Stopping idle, dropping player");
                             drop(client);
-                            log::trace!("Client dropped, waiting for confirmation");
+                            log::trace!("Player dropped, waiting for confirmation");
                             health!(client_received_rx.recv_timeout(Duration::from_secs(3)), "Did not receive confirmation from worker thread");
                             log::trace!("Confirmation received");
                         }
@@ -166,7 +164,7 @@ fn client_task(
                     })
                     .expect("failed to spawn thread");
 
-                try_skip!(client_return_tx.send(client), "Failed to request for client idle");
+                try_skip!(client_return_tx.send(client), "Failed to request for player idle");
                 try_break!(client_received_rx.recv(), "Idle confirmation failed");
 
                 let work = Builder::new()
@@ -175,28 +173,28 @@ fn client_task(
                         let mut buffer = VecDeque::new();
 
                         loop {
-                            log::trace!("Waiting for client requests");
+                            log::trace!("Waiting for player requests");
                             let msg = select! {
                                 recv(request_rx) -> msg => {
-                                    health!(msg, "Failed to receive client request")
+                                    health!(msg, "Failed to receive player request")
                                 }
                                 recv(client_return_rx) -> client => {
                                     let client = match client {
                                         Ok(client) => ClientDropGuard::new(client_return_tx, client),
                                         Err(err) => {
-                                            log::error!(err:?; "Failed to receive client from idle thread");
+                                            log::error!(err:?; "Failed to receive player from idle thread");
                                             HEALTHY.store(false, Ordering::Relaxed);
                                             break;
                                         }
                                     };
 
                                     if !HEALTHY.load(Ordering::Relaxed) {
-                                        log::error!("Received client from idle thread while not healthy. Breaking the loop.");
+                                        log::error!("Received player from idle thread while not healthy. Breaking the loop.");
                                         break;
                                     }
 
-                                    log::trace!(client:?; "Received client from idle. No work to do. Sending it back.");
-                                    health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send client received confirmation");
+                                    log::trace!("Received player from idle. No work to do. Sending it back.");
+                                    health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send player received confirmation");
                                     drop(client);
                                     log::trace!("Waiting for confirmation from idle thread");
                                     health!(client_received_rx.recv_timeout(Duration::from_secs(3)), "Did not receive confirmation from idle thread");
@@ -205,15 +203,14 @@ fn client_task(
                             };
                             buffer.push_back(msg);
 
-                            log::trace!(buffer:?; "Got requests. Trying to receive client from idle thread");
-                            health!(client_write.write_all(b"noidle\n"), "Failed to write noidle command to MPD");
-                            log::trace!("Sent noidle command to MPD");
+                            log::trace!(buffer:?; "Got requests. Trying to receive player from idle thread");
+                            health!(break_handle_work.lock().break_idle(), "Failed to break idle");
 
-                            let client = health!(client_return_rx.recv(), "Failed to receive client from idle thread");
+                            let client = health!(client_return_rx.recv(), "Failed to receive player from idle thread");
                             let mut client = ClientDropGuard::new(client_return_tx, client);
-                            log::trace!("Successfully received client from idle thread. Sending confirmation.");
+                            log::trace!("Successfully received player from idle thread. Sending confirmation.");
 
-                            health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send client received confirmation");
+                            health!(client_received_tx.send_timeout((), Duration::from_secs(3)), "Failed to send player received confirmation");
 
                             log::trace!(timeout:? = config.mpd_read_timeout; "Setting read timeout");
                             health!(client.set_read_timeout(Some(config.mpd_read_timeout)), "Failed to set read timeout");
@@ -229,7 +226,7 @@ fn client_task(
                                     continue;
                                 }
 
-                                match handle_client_request(&mut client, request) {
+                                match handle_client_request(&mut *client, request) {
                                     Ok(result) => {
                                         health!(
                                             event_tx.send(AppEvent::WorkDone(Ok(result))),
@@ -238,13 +235,13 @@ fn client_task(
                                     }
                                     Err(err) => match err.downcast_ref::<MpdError>() {
                                         Some(MpdError::TimedOut(err)) => {
-                                            status_error!(err:?; "Reading response from MPD timed out, will try to reconnect");
+                                            status_error!(err:?; "Reading response from player timed out, will try to reconnect");
                                             health!(client.reconnect(), "Failed to reconnect");
                                             health!(client.set_write_timeout(Some(config.mpd_write_timeout)), "Failed to set write timeout");
-                                            client_write = health!(client.stream.try_clone(), "Client write clone to succeed");
+                                            *break_handle_work.lock() = health!(client.get_break_handle(), "Failed to get break handle");
                                         },
                                         _ => {
-                                            log::error!(error:? = err; "Failed to handle client request");
+                                            log::error!(error:? = err; "Failed to handle player request");
                                             health!(
                                                 event_tx.send(AppEvent::WorkDone(Err(err))),
                                                 "Failed to send work done error event"
@@ -254,26 +251,25 @@ fn client_task(
                                 }
                             }
 
-                            log::trace!("All requests processed, returning client to idle thread");
+                            log::trace!("All requests processed, returning player to idle thread");
                             drop(client);
-                            log::trace!("Client returned to idle thread. Waiting for confirmation");
+                            log::trace!("Player returned to idle thread. Waiting for confirmation");
                             health!(client_received_rx.recv_timeout(Duration::from_secs(3)), "Did not receive confirmation from idle thread");
                         }
 
-                        log::error!("Work loop ended. Shutting down MPD client.");
+                        log::error!("Work loop ended.");
                         HEALTHY.store(false, Ordering::Relaxed);
-                        try_skip!(client_write.shutdown_both(), "Failed to shutdown MPD client");
                     })
                     .expect("failed to spawn thread");
 
                 idle.join().expect("idle thread not to panic");
                 work.join().expect("work thread not to panic");
             } else {
-                client_return_tx.send(client).expect("To be able to return the client");
+                client_return_tx.send(client).expect("To be able to return the player");
             }
 
             let wait_time = std::time::Duration::from_secs(1);
-            log::debug!(wait_time:?; "Lost connection to MPD, waiting before trying again");
+            log::debug!(wait_time:?; "Lost connection to player, waiting before trying again");
             try_skip!(
                 event_tx.send(AppEvent::LostConnection),
                 "Failed to send lost connection event"
@@ -288,49 +284,54 @@ mod drop_guard {
 
     use crossbeam::channel::Sender;
 
-    use crate::mpd::client::Client;
+    use crate::core::player::Player;
 
-    #[derive(Debug)]
-    pub struct ClientDropGuard<'sender, 'client> {
-        tx: &'sender Sender<Client<'client>>,
-        client: Option<Client<'client>>,
+    pub struct ClientDropGuard<'sender> {
+        tx: &'sender Sender<Box<dyn Player>>,
+        client: Option<Box<dyn Player>>,
     }
 
-    impl<'sender, 'client> ClientDropGuard<'sender, 'client> {
-        pub fn new(tx: &'sender Sender<Client<'client>>, client: Client<'client>) -> Self {
+    impl std::fmt::Debug for ClientDropGuard<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ClientDropGuard").finish()
+        }
+    }
+
+    impl<'sender> ClientDropGuard<'sender> {
+        pub fn new(tx: &'sender Sender<Box<dyn Player>>, client: Box<dyn Player>) -> Self {
             Self { tx, client: Some(client) }
         }
     }
 
-    impl Drop for ClientDropGuard<'_, '_> {
+    impl Drop for ClientDropGuard<'_> {
         fn drop(&mut self) {
             if let Some(client) = self.client.take() {
-                log::trace!("Sending back client on drop");
+                log::trace!("Sending back player on drop");
                 if let Err(err) = self.tx.send(client) {
-                    log::error!(error:? = err; "Failed to send client back on drop");
+                    log::error!(error:? = err; "Failed to send player back on drop");
                 }
             }
         }
     }
 
-    impl<'client> std::ops::Deref for ClientDropGuard<'_, 'client> {
-        type Target = Client<'client>;
+    impl std::ops::Deref for ClientDropGuard<'_> {
+        type Target = dyn Player;
 
         fn deref(&self) -> &Self::Target {
-            self.client.as_ref().expect("Cannot deref because client was None")
+            self.client.as_ref().expect("Cannot deref because client was None").as_ref()
         }
     }
 
-    impl DerefMut for ClientDropGuard<'_, '_> {
+    impl DerefMut for ClientDropGuard<'_> {
         fn deref_mut(&mut self) -> &mut Self::Target {
-            self.client.as_mut().expect("Cannot deref_mut because client was None")
+            self.client.as_mut().expect("Cannot deref_mut because client was None").as_mut()
         }
     }
 }
 
 fn check_connection(
     first_loop: bool,
-    client: &mut Client<'_>,
+    client: &mut dyn Player,
     client_rx: &Receiver<ClientRequest>,
     event_tx: &Sender<AppEvent>,
     config: &Config,
@@ -356,7 +357,7 @@ fn check_connection(
     }
 }
 
-fn handle_client_request(client: &mut Client<'_>, request: ClientRequest) -> Result<WorkDone> {
+fn handle_client_request(client: &mut dyn Player, request: ClientRequest) -> Result<WorkDone> {
     match request {
         ClientRequest::Query(query) => Ok(WorkDone::MpdCommandFinished {
             id: query.id,

@@ -4,7 +4,7 @@ use ratatui::{Frame, prelude::Rect};
 use super::Pane;
 use crate::{
     ctx::Ctx,
-    mpd::mpd_client::{MpdClient, ValueChange},
+    mpd::mpd_client::{ValueChange},
     shared::{
         keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
@@ -45,22 +45,22 @@ impl Pane for HeaderPane {
 
         match event.kind {
             MouseEventKind::LeftClick => {
-                ctx.command(move |client| {
-                    client.pause_toggle()?;
+                ctx.command(move |player| {
+                    player.pause_toggle()?;
                     Ok(())
                 });
             }
             MouseEventKind::ScrollUp => {
                 let volume_step = ctx.config.volume_step.into();
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Increase(volume_step))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Increase(volume_step))?;
                     Ok(())
                 });
             }
             MouseEventKind::ScrollDown => {
                 let volume_step = ctx.config.volume_step.into();
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Decrease(volume_step))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Decrease(volume_step))?;
                     Ok(())
                 });
             }

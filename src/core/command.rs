@@ -11,18 +11,16 @@ use crate::{
     ctx::Ctx,
     mpd::{
         QueuePosition,
-        client::Client,
-        commands::{IdleEvent, State, mpd_config::MpdConfig, volume::Bound},
-        mpd_client::{AlbumArtOrder, Filter, MpdClient, MpdCommand, Tag, ValueChange},
-        proto_client::ProtoClient,
+        commands::{State, mpd_config::MpdConfig, volume::Bound},
+        mpd_client::{AlbumArtOrder, Filter, Tag, ValueChange},
         version::Version,
     },
+    core::player::{Player, Enqueue},
     shared::{
         args,
         ext::duration::DurationExt,
         lrc::{LrcIndex, get_lrc_path},
         macros::status_error,
-        mpd_client_ext::MpdClientExt,
         ytdlp::{self, YtDlp, YtDlpHost},
     },
 };
@@ -31,7 +29,7 @@ impl Command {
     pub fn execute(
         mut self,
         config: &CliConfig,
-    ) -> Result<Box<dyn FnOnce(&mut Client<'_>) -> Result<()> + Send + 'static>> {
+    ) -> Result<Box<dyn FnOnce(&mut dyn Player) -> Result<()> + Send + 'static>> {
         match self {
             Command::Config { .. } => bail!("Cannot use config command here."),
             Command::Theme { .. } => bail!("Cannot use theme command here."),
@@ -39,44 +37,41 @@ impl Command {
             Command::DebugInfo => bail!("Cannot use debuginfo command here."),
             Command::Raw { .. } => bail!("Cannot use raw command here."),
             Command::Remote { .. } => bail!("Cannot use remote command here."),
-            Command::AddRandom { tag, count } => Ok(Box::new(move |client| {
+            Command::AddRandom { tag, count } => Ok(Box::new(move |player| {
                 match tag {
                     AddRandom::Song => {
-                        client.add_random_songs(count, None)?;
+                        player.add_random_songs(count, None)?;
                     }
                     AddRandom::Artist => {
-                        client.add_random_tag(count, Tag::Artist)?;
+                        player.add_random_tag(count, Tag::Artist)?;
                     }
                     AddRandom::Album => {
-                        client.add_random_tag(count, Tag::Album)?;
+                        player.add_random_tag(count, Tag::Album)?;
                     }
                     AddRandom::AlbumArtist => {
-                        client.add_random_tag(count, Tag::AlbumArtist)?;
+                        player.add_random_tag(count, Tag::AlbumArtist)?;
                     }
                     AddRandom::Genre => {
-                        client.add_random_tag(count, Tag::Genre)?;
+                        player.add_random_tag(count, Tag::Genre)?;
                     }
                 }
                 Ok(())
             })),
             Command::Update { ref mut path, wait } | Command::Rescan { ref mut path, wait } => {
                 let path = path.take();
-                Ok(Box::new(move |client| {
-                    let crate::mpd::commands::Update { job_id } =
-                        if matches!(self, Command::Update { .. }) {
-                            client.update(path.as_deref())?
-                        } else {
-                            client.rescan(path.as_deref())?
-                        };
+                let is_update = matches!(self, Command::Update { .. });
+                Ok(Box::new(move |player| {
+                    let crate::mpd::commands::Update { job_id } = if is_update {
+                        player.update(path.as_deref())?
+                    } else {
+                        player.rescan(path.as_deref())?
+                    };
 
                     if wait {
                         loop {
-                            client.idle(Some(IdleEvent::Update))?;
-                            log::trace!("issuing update");
-                            let crate::mpd::commands::Status { updating_db, .. } =
-                                client.get_status()?;
-                            log::trace!("update done");
-                            match updating_db {
+                            player.wait_for_event()?; // Wait for next event
+                            let status = player.get_status()?;
+                            match status.updating_db {
                                 Some(current_id) if current_id > job_id => {
                                     break;
                                 }
@@ -101,115 +96,109 @@ impl Command {
                     Ok(())
                 }))
             }
-            Command::Queue => Ok(Box::new(|client| {
-                let queue = client.playlist_info()?;
-                if let Some(queue) = queue {
-                    println!("{}", serde_json::ser::to_string(&queue)?);
-                    Ok(())
-                } else {
-                    std::process::exit(1);
-                }
+            Command::Queue => Ok(Box::new(|player| {
+                let queue = player.get_queue()?;
+                println!("{}", serde_json::ser::to_string(&queue)?);
+                Ok(())
             })),
-            Command::ListAll { files } => Ok(Box::new(|client| {
-                let result = if files.is_empty() {
-                    client.list_all(None)?
+            Command::ListAll { files } => Ok(Box::new(move |player| {
+                let mut all_songs = Vec::new();
+                if files.is_empty() {
+                    all_songs = player.list_all(None)?;
                 } else {
-                    client.send_start_cmd_list()?;
                     for file in files {
-                        client.send_list_all(Some(&file))?;
+                        all_songs.extend(player.list_all(Some(&file))?);
                     }
-                    client.send_execute_cmd_list()?;
-                    client.read_response()?
                 };
 
-                result.into_files().for_each(|file| println!("{file}"));
+                all_songs.iter().for_each(|song| println!("{}", song.file));
                 Ok(())
             })),
-            Command::Play { position: None } => Ok(Box::new(|client| Ok(client.play()?))),
+            Command::Play { position: None } => Ok(Box::new(|player| Ok(player.play(None)?))),
             Command::Play { position: Some(pos) } => {
-                Ok(Box::new(move |client| Ok(client.play_pos(pos)?)))
+                Ok(Box::new(move |player| Ok(player.play_pos(pos)?)))
             }
-            Command::Pause => Ok(Box::new(|client| Ok(client.pause()?))),
-            Command::TogglePause => Ok(Box::new(|client| {
-                let status = client.get_status()?;
+            Command::Pause => Ok(Box::new(|player| Ok(player.pause()?))),
+            Command::TogglePause => Ok(Box::new(|player| {
+                let status = player.get_status()?;
                 if matches!(status.state, State::Play | State::Pause) {
-                    client.pause_toggle()?;
+                    player.pause_toggle()?;
                 } else {
-                    client.play()?;
+                    player.play(None)?;
                 }
                 Ok(())
             })),
-            Command::Unpause => Ok(Box::new(|client| Ok(client.unpause()?))),
-            Command::Stop => Ok(Box::new(|client| Ok(client.stop()?))),
+            Command::Unpause => Ok(Box::new(|player| Ok(player.unpause()?))),
+            Command::Stop => Ok(Box::new(|player| Ok(player.stop()?))),
             Command::Volume { value: Some(value) } => {
-                Ok(Box::new(move |client| Ok(client.volume(value.parse()?)?)))
+                Ok(Box::new(move |player| Ok(player.volume(ValueChange::Set(value.parse()?))?)))
             }
-            Command::Volume { value: None } => Ok(Box::new(|client| {
-                println!("{}", client.get_status()?.volume.value());
+            Command::Volume { value: None } => Ok(Box::new(|player| {
+                println!("{}", player.get_status()?.volume.value());
                 Ok(())
             })),
-            Command::Next { keep_state } => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
-                Ok(client.next_keep_state(keep_state, status.state)?)
+            Command::Next { keep_state } => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
+                Ok(player.next_keep_state(keep_state, status.state)?)
             })),
-            Command::Prev { rewind_to_start, keep_state } => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
+            Command::Prev { rewind_to_start, keep_state } => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
                 match rewind_to_start {
                     Some(value) => {
                         if status.elapsed.as_secs() >= value {
-                            client.seek_current(ValueChange::Set(0))?;
+                            player.seek_current(ValueChange::Set(0))?;
                         } else {
-                            client.prev_keep_state(keep_state, status.state)?;
+                            player.prev_keep_state(keep_state, status.state)?;
                         }
                     }
                     None => {
-                        client.prev_keep_state(keep_state, status.state)?;
+                        player.prev_keep_state(keep_state, status.state)?;
                     }
                 }
                 Ok(())
             })),
             Command::Repeat { value } => {
-                Ok(Box::new(move |client| Ok(client.repeat((value).into())?)))
+                Ok(Box::new(move |player| Ok(player.set_repeat((value).into())?)))
             }
             Command::Random { value } => {
-                Ok(Box::new(move |client| Ok(client.random((value).into())?)))
+                Ok(Box::new(move |player| Ok(player.set_random((value).into())?)))
             }
             Command::Single { value } => {
-                Ok(Box::new(move |client| Ok(client.single((value).into())?)))
+                Ok(Box::new(move |player| Ok(player.set_single((value).into())?)))
             }
             Command::Consume { value } => {
-                Ok(Box::new(move |client| Ok(client.consume((value).into())?)))
+                Ok(Box::new(move |player| Ok(player.set_consume((value).into())?)))
             }
-            Command::ToggleRepeat => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
-                Ok(client.repeat(!status.repeat)?)
+            Command::ToggleRepeat => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
+                Ok(player.set_repeat(!status.repeat)?)
             })),
-            Command::ToggleRandom => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
-                Ok(client.random(!status.random)?)
+            Command::ToggleRandom => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
+                Ok(player.set_random(!status.random)?)
             })),
-            Command::ToggleSingle { skip_oneshot } => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
-                if skip_oneshot || client.version() < Version::new(0, 21, 0) {
-                    client.single(status.single.cycle_skip_oneshot())?;
+            Command::ToggleSingle { skip_oneshot } => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
+                if skip_oneshot || player.version() < Version::new(0, 21, 0) {
+                    player.set_single(status.single.cycle_skip_oneshot())?;
                 } else {
-                    client.single(status.single.cycle())?;
+                    player.set_single(status.single.cycle())?;
                 }
                 Ok(())
             })),
-            Command::ToggleConsume { skip_oneshot } => Ok(Box::new(move |client| {
-                let status = client.get_status()?;
-                if skip_oneshot || client.version() < Version::new(0, 24, 0) {
-                    client.consume(status.consume.cycle_skip_oneshot())?;
+            Command::ToggleConsume { skip_oneshot } => Ok(Box::new(move |player| {
+                let status = player.get_status()?;
+                if skip_oneshot || player.version() < Version::new(0, 24, 0) {
+                    player.set_consume(status.consume.cycle_skip_oneshot())?;
                 } else {
-                    client.consume(status.consume.cycle())?;
+                    player.set_consume(status.consume.cycle())?;
                 }
                 Ok(())
             })),
             Command::Seek { value } => {
-                Ok(Box::new(move |client| Ok(client.seek_current(value.parse()?)?)))
+                Ok(Box::new(move |player| Ok(player.seek_current(value.parse()?)?)))
             }
-            Command::Clear => Ok(Box::new(|client| Ok(client.clear()?))),
+            Command::Clear => Ok(Box::new(|player| Ok(player.clear_queue()?))),
             Command::Add { files, skip_ext_check, position }
                 if files.iter().any(|path| path.is_absolute()) =>
             {
@@ -279,25 +268,22 @@ impl Command {
             })),
             Command::AddYt { url, position } => {
                 let config = config.clone();
-                Ok(Box::new(move |client| {
-                    // Idle with message subsystem, the cli client is never subscribed to any
-                    // channels so this will idle indefinitely
-                    client.enter_idle(Some(IdleEvent::Message))?;
+                Ok(Box::new(move |player| {
+                    // This is only supported for MPD for now because it uses idle loop to wait for download
+                    // To make it generic we should probably not rely on idle loop here if not MPD.
+                    // But for now let's just make it call the player methods.
 
                     ytdlp::init_and_download(&config, &url, |path| {
-                        client.noidle()?;
-                        if let Err(err) = client.add_downloaded_file_to_queue(
+                        if let Err(err) = player.add_downloaded_file_to_queue(
                             path,
                             config.cache_dir.as_deref(),
                             position,
                         ) {
                             eprintln!("Failed to add downloaded file to queue: {err}");
                         }
-                        client.enter_idle(Some(IdleEvent::Message))?;
                         Ok(())
                     })?;
 
-                    client.noidle()?;
                     Ok(())
                 }))
             }
@@ -314,64 +300,54 @@ impl Command {
                 };
 
                 let config = config.clone();
-                Ok(Box::new(move |client| {
-                    // Idle with message subsystem, the cli client is never subscribed to any
-                    // channels so this will idle indefinitely
-                    client.enter_idle(Some(IdleEvent::Message))?;
-
+                Ok(Box::new(move |player| {
                     ytdlp::init_and_download(&config, &chosen_url, |path| {
-                        client.noidle()?;
-                        client.add_downloaded_file_to_queue(
+                        player.add_downloaded_file_to_queue(
                             path,
                             config.cache_dir.as_deref(),
                             position,
                         )?;
-                        client.enter_idle(Some(IdleEvent::Message))?;
                         Ok(())
                     })?;
 
-                    client.noidle()?;
                     Ok(())
                 }))
             }
-            Command::Save { name } => Ok(Box::new(move |client| {
-                client.save_queue_as_playlist(&name, None)?;
+            Command::Save { name } => Ok(Box::new(move |player| {
+                player.save_queue_as_playlist(&name, None)?;
                 Ok(())
             })),
-            Command::Load { names } => Ok(Box::new(|client| {
-                client.send_start_cmd_list()?;
+            Command::Load { names } => Ok(Box::new(move |player| {
                 for name in names {
-                    client.send_load_playlist(&name, None)?;
+                    player.enqueue_multiple(vec![Enqueue::Playlist { name }], None, None, false)?;
                 }
-                client.send_execute_cmd_list()?;
-                client.read_ok()?;
                 Ok(())
             })),
-            Command::Decoders => Ok(Box::new(|client| {
-                println!("{}", serde_json::ser::to_string(&client.decoders()?)?);
+            Command::Decoders => Ok(Box::new(|player| {
+                println!("{}", serde_json::ser::to_string(&player.decoders()?)?);
                 Ok(())
             })),
-            Command::Outputs => Ok(Box::new(|client| {
-                println!("{}", serde_json::ser::to_string(&client.outputs()?)?);
+            Command::Outputs => Ok(Box::new(|player| {
+                println!("{}", serde_json::ser::to_string(&player.outputs()?)?);
                 Ok(())
             })),
             Command::ToggleOutput { id } => {
-                Ok(Box::new(move |client| Ok(client.toggle_output(id)?)))
+                Ok(Box::new(move |player| Ok(player.toggle_output(id)?)))
             }
             Command::EnableOutput { id } => {
-                Ok(Box::new(move |client| Ok(client.enable_output(id)?)))
+                Ok(Box::new(move |player| Ok(player.enable_output(id)?)))
             }
             Command::DisableOutput { id } => {
-                Ok(Box::new(move |client| Ok(client.disable_output(id)?)))
+                Ok(Box::new(move |player| Ok(player.disable_output(id)?)))
             }
-            Command::Status => Ok(Box::new(|client| {
-                println!("{}", serde_json::ser::to_string(&client.get_status()?)?);
+            Command::Status => Ok(Box::new(|player| {
+                println!("{}", serde_json::ser::to_string(&player.get_status()?)?);
                 Ok(())
             })),
             Command::Song { path: Some(paths) } if paths.len() == 1 => {
-                Ok(Box::new(move |client| {
+                Ok(Box::new(move |player| {
                     let path = &paths[0];
-                    if let Some(song) = client.find_one(&[Filter::new(Tag::File, path.as_str())])? {
+                    if let Some(song) = player.find_one(&[Filter::new(Tag::File, path.as_str())])? {
                         println!("{}", serde_json::ser::to_string(&song)?);
                         Ok(())
                     } else {
@@ -380,10 +356,10 @@ impl Command {
                     }
                 }))
             }
-            Command::Song { path: Some(paths) } => Ok(Box::new(move |client| {
+            Command::Song { path: Some(paths) } => Ok(Box::new(move |player| {
                 let mut songs = Vec::new();
                 for path in &paths {
-                    if let Some(song) = client.find_one(&[Filter::new(Tag::File, path.as_str())])? {
+                    if let Some(song) = player.find_one(&[Filter::new(Tag::File, path.as_str())])? {
                         songs.push(song);
                     } else {
                         println!("Song with path '{path}' not found.");
@@ -393,8 +369,8 @@ impl Command {
                 println!("{}", serde_json::ser::to_string(&songs)?);
                 Ok(())
             })),
-            Command::Song { path: None } => Ok(Box::new(|client| {
-                let current_song = client.get_current_song()?;
+            Command::Song { path: None } => Ok(Box::new(|player| {
+                let current_song = player.get_current_song()?;
                 if let Some(song) = current_song {
                     println!("{}", serde_json::ser::to_string(&song)?);
                     Ok(())
@@ -403,23 +379,23 @@ impl Command {
                 }
             })),
             Command::Mount { name, path } => {
-                Ok(Box::new(move |client| Ok(client.mount(&name, &path)?)))
+                Ok(Box::new(move |player| Ok(player.mount(&name, &path)?)))
             }
-            Command::Unmount { name } => Ok(Box::new(move |client| Ok(client.unmount(&name)?))),
-            Command::ListMounts => Ok(Box::new(|client| {
-                println!("{}", serde_json::ser::to_string(&client.list_mounts()?)?);
+            Command::Unmount { name } => Ok(Box::new(move |player| Ok(player.unmount(&name)?))),
+            Command::ListMounts => Ok(Box::new(|player| {
+                println!("{}", serde_json::ser::to_string(&player.list_mounts()?)?);
                 Ok(())
             })),
-            Command::ListPartitions => Ok(Box::new(|client| {
-                println!("{}", serde_json::ser::to_string(&client.list_partitions()?.0)?);
+            Command::ListPartitions => Ok(Box::new(|player| {
+                println!("{}", serde_json::ser::to_string(&player.list_partitions()?)?);
                 Ok(())
             })),
-            Command::AlbumArt { output } => Ok(Box::new(move |client| {
-                let Some(song) = client.get_current_song()? else {
+            Command::AlbumArt { output } => Ok(Box::new(move |player| {
+                let Some(song) = player.get_current_song()? else {
                     std::process::exit(3);
                 };
 
-                let album_art = client.find_album_art(&song.file, AlbumArtOrder::EmbeddedFirst)?;
+                let album_art = player.find_album_art(&song.file, AlbumArtOrder::EmbeddedFirst)?;
 
                 let Some(album_art) = album_art else {
                     std::process::exit(2);
@@ -440,13 +416,13 @@ impl Command {
                 }
             })),
             Command::Sticker { cmd: StickerCmd::Set { uri, key, value } } => {
-                Ok(Box::new(move |client| {
-                    client.set_sticker(&uri, &key, &value)?;
+                Ok(Box::new(move |player| {
+                    player.set_sticker(&uri, &key, &value)?;
                     Ok(())
                 }))
             }
-            Command::Sticker { cmd: StickerCmd::Get { uri, key } } => Ok(Box::new(move |client| {
-                match client.sticker(&uri, &key)? {
+            Command::Sticker { cmd: StickerCmd::Get { uri, key } } => Ok(Box::new(move |player| {
+                match player.sticker(&uri, &key)? {
                     Some(sticker) => {
                         println!("{}", serde_json::ser::to_string(&sticker)?);
                     }
@@ -457,33 +433,34 @@ impl Command {
                 Ok(())
             })),
             Command::Sticker { cmd: StickerCmd::Delete { uri, key } } => {
-                Ok(Box::new(move |client| {
-                    client.delete_sticker(&uri, &key)?;
+                Ok(Box::new(move |player| {
+                    player.delete_sticker(&uri, &key)?;
                     Ok(())
                 }))
             }
             Command::Sticker { cmd: StickerCmd::DeleteAll { uri } } => {
-                Ok(Box::new(move |client| {
-                    client.delete_all_stickers(&uri)?;
+                Ok(Box::new(move |player| {
+                    player.delete_all_stickers(&uri)?;
                     Ok(())
                 }))
             }
-            Command::Sticker { cmd: StickerCmd::List { uri } } => Ok(Box::new(move |client| {
-                let stickers = client.list_stickers(&uri)?;
+            Command::Sticker { cmd: StickerCmd::List { uri } } => Ok(Box::new(move |player| {
+                let stickers = player.list_stickers(&uri)?;
                 println!("{}", serde_json::ser::to_string(&stickers)?);
                 Ok(())
             })),
             Command::Sticker { cmd: StickerCmd::Find { uri, key } } => {
-                Ok(Box::new(move |client| {
-                    let stickers = client.find_stickers(&uri, &key, None)?;
+                Ok(Box::new(move |player| {
+                    let stickers = player.find_stickers(&uri, &key, None)?;
                     println!("{}", serde_json::ser::to_string(&stickers)?);
                     Ok(())
                 }))
             }
-            Command::SendMessage { channel, content } => Ok(Box::new(move |client| {
-                client.send_message(&channel, &content)?;
+            Command::SendMessage { channel, content } => Ok(Box::new(move |player| {
+                player.send_message(&channel, &content)?;
                 Ok(())
             })),
+            Command::SpotifyLogin => bail!("SpotifyLogin should be handled in main."),
         }
     }
 }

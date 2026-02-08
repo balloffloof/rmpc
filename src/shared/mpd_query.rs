@@ -8,11 +8,8 @@ use ratatui::{style::Style, widgets::ListItem};
 use super::{events::AppEvent, mpd_client_ext::PartitionedOutput};
 use crate::{
     config::tabs::PaneType,
-    mpd::{
-        client::Client,
-        commands::{Decoder, IdleEvent, Song, Status, Volume},
-        mpd_client::MpdClient,
-    },
+    core::player::Player,
+    mpd::commands::{Decoder, IdleEvent, Song, Status, Volume},
     shared::{events::ClientRequest, macros::try_skip},
     ui::{dir_or_song::DirOrSong, dirstack::Path},
 };
@@ -29,20 +26,20 @@ pub(crate) struct MpdQuery {
     pub replace_id: Option<&'static str>,
     pub target: Option<PaneType>,
     #[debug(skip)]
-    pub callback: Box<dyn FnOnce(&mut Client<'_>) -> Result<MpdQueryResult> + Send>,
+    pub callback: Box<dyn FnOnce(&mut dyn Player) -> Result<MpdQueryResult> + Send>,
 }
 
 #[derive(derive_more::Debug, Builder)]
 pub(crate) struct MpdQuerySync {
     #[debug(skip)]
-    pub callback: Box<dyn FnOnce(&mut Client<'_>) -> Result<MpdQueryResult> + Send>,
+    pub callback: Box<dyn FnOnce(&mut dyn Player) -> Result<MpdQueryResult> + Send>,
     pub tx: Sender<MpdQueryResult>,
 }
 
 #[derive(derive_more::Debug)]
 pub struct MpdCommand {
     #[debug(skip)]
-    pub callback: Box<dyn FnOnce(&mut Client<'_>) -> Result<()> + Send>,
+    pub callback: Box<dyn FnOnce(&mut dyn Player) -> Result<()> + Send>,
 }
 
 impl MpdQuery {
@@ -105,8 +102,8 @@ pub fn run_status_update((_, client_tx): &(Sender<AppEvent>, Sender<ClientReques
             id: GLOBAL_STATUS_UPDATE,
             target: None,
             replace_id: Some("status"),
-            callback: Box::new(move |client| Ok(MpdQueryResult::Status {
-                data: client.get_status()?,
+            callback: Box::new(move |player| Ok(MpdQueryResult::Status {
+                data: player.get_status()?,
                 source_event: None
             })),
         })),

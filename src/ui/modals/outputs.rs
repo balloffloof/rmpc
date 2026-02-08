@@ -12,12 +12,11 @@ use crate::{
     MpdQueryResult,
     config::keys::CommonAction,
     ctx::Ctx,
-    mpd::mpd_client::MpdClient,
     shared::{
         id::{self, Id},
         keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
-        mpd_client_ext::{MpdClientExt, PartitionedOutput, PartitionedOutputKind},
+        mpd_client_ext::{PartitionedOutput, PartitionedOutputKind},
     },
     ui::{UiEvent, dirstack::DirState},
 };
@@ -58,28 +57,17 @@ impl OutputsModal {
         let name = output.name.clone();
         let kind = output.kind;
         let current_partition = ctx.status.partition.clone();
-        ctx.query().id("refresh_outputs").query(move |client| {
-            match kind {
-                PartitionedOutputKind::OtherPartition => {
-                    client.move_output(&name)?;
-                    let new_outputs = client.outputs()?.0;
-                    if let Some(output) = new_outputs.iter().find(|output| output.name == name) {
-                        client.enable_output(output.id)?;
-                    }
-                }
-                PartitionedOutputKind::CurrentPartition => {
-                    client.toggle_output(id)?;
-                }
-            }
+        ctx.query().id("refresh_outputs").query(move |player| {
+            player.toggle_output_kind(&name, id, kind)?;
 
-            Ok(MpdQueryResult::Outputs(client.list_partitioned_outputs(&current_partition)?))
+            Ok(MpdQueryResult::Outputs(player.list_partitioned_outputs(&current_partition)?))
         });
     }
 
     fn refresh_outputs(&mut self, ctx: &Ctx) {
         let current_partition = ctx.status.partition.clone();
-        ctx.query().id("refresh_outputs").replace_id("refresh_outputs").query(move |client| {
-            let outputs = client.list_partitioned_outputs(&current_partition)?;
+        ctx.query().id("refresh_outputs").replace_id("refresh_outputs").query(move |player| {
+            let outputs = player.list_partitioned_outputs(&current_partition)?;
             Ok(MpdQueryResult::Outputs(outputs))
         });
     }

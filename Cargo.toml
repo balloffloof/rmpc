@@ -52,6 +52,9 @@ thiserror = "2.0.18"
 parking_lot = { version = "0.12.5", features = [] }
 unicode-segmentation = "1.12.0"
 winnow = "^0.7.14"
+librespot = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+rspotify = { version = "0.14.0", default-features = false, features = ["client-ureq", "ureq-rustls-tls"] }
+tokio = { version = "1.45.0", features = ["full"] }
 
 [build-dependencies]
 clap = { workspace = true }
@@ -59,8 +62,20 @@ strum = { workspace = true }
 serde = { workspace = true }
 clap_complete = "4.5.65"
 clap_mangen = "0.2.31"
-vergen-gitcl = { version = "9.1.0", features = ["build"] }
+vergen-gitcl = { version = "1.0.1", features = ["build"] }
+vergen = { version = "8.3.2", features = ["build", "git", "gitcl"] }
 anyhow = "1.0.100"
+
+[patch.crates-io]
+librespot = { path = "librespot_local" }
+librespot-core = { path = "librespot_local/core" }
+librespot-audio = { path = "librespot_local/audio" }
+librespot-connect = { path = "librespot_local/connect" }
+librespot-discovery = { path = "librespot_local/discovery" }
+librespot-metadata = { path = "librespot_local/metadata" }
+librespot-oauth = { path = "librespot_local/oauth" }
+librespot-playback = { path = "librespot_local/playback" }
+librespot-protocol = { path = "librespot_local/protocol" }
 
 [dev-dependencies]
 rstest = "0.26.1"

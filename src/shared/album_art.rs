@@ -1,7 +1,6 @@
 use crate::{
     config::{album_art::ImageMethod, tabs::PaneType},
     ctx::Ctx,
-    mpd::mpd_client::MpdClient,
     shared::{events::WorkRequest, mpd_query::MpdQueryResult},
 };
 

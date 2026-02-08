@@ -8,7 +8,6 @@ use clap_complete::{
     generate_to,
 };
 use clap_mangen::Man;
-use vergen_gitcl::{Emitter, GitclBuilder};
 
 // Mock mpd::QueuePosition for cli.rs to be able to import it. Also see header
 // comment in cli.rs.
@@ -42,10 +41,6 @@ fn generate_shell_completions(mut cmd: ClapCommand) -> Result<(), Box<dyn Error>
 }
 
 fn emit_git_info() -> Result<(), Box<dyn Error>> {
-    Emitter::default()
-        .add_instructions(&GitclBuilder::default().describe(false, false, None).build()?)?
-        .emit()?;
-
     Ok(())
 }
 
