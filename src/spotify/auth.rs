@@ -10,15 +10,54 @@ pub fn get_token_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+pub fn get_creds_path() -> Result<PathBuf> {
+    let mut path = crate::shared::paths::config_dir().context("Failed to get config directory")?;
+    path.push("spotify_creds.json");
+    Ok(path)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SpotifyCreds {
+    client_id: String,
+    client_secret: String,
+}
+
 pub fn create_spotify_client() -> Result<AuthCodeSpotify> {
     // These should ideally be configurable, but for now we need some defaults
     // or the user must provide them via env vars or config.
     // I'll check env vars first.
-    let client_id = std::env::var("SPOTIFY_CLIENT_ID").ok();
-    let client_secret = std::env::var("SPOTIFY_CLIENT_SECRET").ok();
+    let mut client_id = std::env::var("SPOTIFY_CLIENT_ID").ok();
+    let mut client_secret = std::env::var("SPOTIFY_CLIENT_SECRET").ok();
+
+    let creds_path = get_creds_path()?;
+    if (client_id.is_none() || client_secret.is_none()) && creds_path.exists() {
+        let json = std::fs::read_to_string(&creds_path)?;
+        if let Ok(creds) = serde_json::from_str::<SpotifyCreds>(&json) {
+            if client_id.is_none() { client_id = Some(creds.client_id); }
+            if client_secret.is_none() { client_secret = Some(creds.client_secret); }
+        }
+    }
 
     if client_id.is_none() || client_secret.is_none() {
-        return Err(anyhow::anyhow!("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables must be set for Spotify integration"));
+        println!("Spotify Client ID and Client Secret not found.");
+        println!("You can create them at https://developer.spotify.com/dashboard");
+        println!("Use http://localhost:8888/callback as the Redirect URI.");
+        println!("Please enter your Client ID:");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let id = input.trim().to_string();
+
+        println!("Please enter your Client Secret:");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let secret = input.trim().to_string();
+
+        let creds = SpotifyCreds { client_id: id.clone(), client_secret: secret.clone() };
+        let json = serde_json::to_string(&creds)?;
+        std::fs::write(&creds_path, json)?;
+
+        client_id = Some(id);
+        client_secret = Some(secret);
     }
 
     let credentials = Credentials::new(&client_id.unwrap(), &client_secret.unwrap());
