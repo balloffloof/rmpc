@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+package spotify.esperanto;
+
+import "google/protobuf/descriptor.proto";

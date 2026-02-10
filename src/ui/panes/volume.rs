@@ -7,7 +7,7 @@ use crate::{
     ctx::Ctx,
     mpd::{
         commands::volume::Bound,
-        mpd_client::{MpdClient, ValueChange},
+        mpd_client::ValueChange,
     },
     shared::{
         keys::ActionEvent,
@@ -93,8 +93,8 @@ impl Pane for VolumePane {
                 // Safe conversion: clamped to 0-100 range and rounded, so cast is always valid
                 let new_volume = (volume_ratio * 100.0).clamp(0.0, 100.0).round() as u32;
 
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Set(new_volume))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Set(new_volume))?;
                     Ok(())
                 });
 
@@ -105,8 +105,8 @@ impl Pane for VolumePane {
                     return Ok(());
                 }
                 let volume_step = ctx.config.volume_step.into();
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Increase(volume_step))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Increase(volume_step))?;
                     Ok(())
                 });
             }
@@ -115,8 +115,8 @@ impl Pane for VolumePane {
                     return Ok(());
                 }
                 let volume_step = ctx.config.volume_step.into();
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Decrease(volume_step))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Decrease(volume_step))?;
                     Ok(())
                 });
             }
@@ -131,8 +131,8 @@ impl Pane for VolumePane {
                 // Safe conversion: clamped to 0-100 range and rounded, so cast is always valid
                 let new_volume = (volume_ratio * 100.0).clamp(0.0, 100.0).round() as u32;
 
-                ctx.command(move |client| {
-                    client.volume(ValueChange::Set(new_volume))?;
+                ctx.command(move |player| {
+                    player.volume(ValueChange::Set(new_volume))?;
                     Ok(())
                 });
 

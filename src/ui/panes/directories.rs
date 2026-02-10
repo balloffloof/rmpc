@@ -8,12 +8,12 @@ use crate::{
     MpdQueryResult,
     config::tabs::PaneType,
     ctx::Ctx,
+    core::player::{Player, Enqueue},
     mpd::{
-        client::Client,
         commands::Song,
-        mpd_client::{Filter, FilterKind, MpdClient, Tag},
+        mpd_client::{Filter, FilterKind, Tag},
     },
-    shared::{keys::ActionEvent, mouse_event::MouseEvent, mpd_client_ext::Enqueue},
+    shared::{keys::ActionEvent, mouse_event::MouseEvent},
     ui::{
         UiEvent,
         browser::BrowserPane,
@@ -156,7 +156,7 @@ impl BrowserPane<DirOrSong> for DirectoriesPane {
     fn list_songs_in_item(
         &self,
         item: DirOrSong,
-    ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Clone + 'static {
+    ) -> impl FnOnce(&mut dyn Player) -> Result<Vec<Song>> + Clone + 'static {
         move |client| {
             Ok(match item {
                 DirOrSong::Dir { full_path, playlist: false, .. } => {

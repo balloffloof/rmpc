@@ -21,11 +21,10 @@ use crate::{
         album_art::ImageMethod,
         tabs::{PaneType, TabName},
     },
+    core::player::Player,
     core::scheduler::{Scheduler, time_provider::DefaultTimeProvider},
     mpd::{
-        client::Client,
         commands::{Song, State, Status},
-        mpd_client::MpdClient,
         version::Version,
     },
     shared::{
@@ -33,7 +32,6 @@ use crate::{
         keys::KeyResolver,
         lrc::{Lrc, LrcIndex},
         macros::{status_error, status_warn},
-        mpd_client_ext::MpdClientExt,
         mpd_query::MpdQuerySync,
         ring_vec::RingVec,
         ytdlp::YtDlpManager,
@@ -84,14 +82,14 @@ pub struct Ctx {
 #[bon]
 impl Ctx {
     pub(crate) fn try_new(
-        client: &mut Client<'_>,
+        player: &mut dyn Player,
         mut config: Config,
         app_event_sender: Sender<AppEvent>,
         work_sender: Sender<WorkRequest>,
         client_request_sender: Sender<ClientRequest>,
         mut scheduler: Scheduler<(Sender<AppEvent>, Sender<ClientRequest>), DefaultTimeProvider>,
     ) -> Result<Self> {
-        let supported_commands: HashSet<String> = client.supported_commands.clone();
+        let supported_commands: HashSet<String> = player.supported_commands();
         let stickers_supported = if supported_commands.contains("sticker") {
             StickersSupport::Supported
         } else {
@@ -99,8 +97,8 @@ impl Ctx {
         };
         log::debug!(supported_commands:? = supported_commands; "Supported commands by server");
 
-        let status = client.get_status()?;
-        let queue = client.playlist_info()?.unwrap_or_default();
+        let status = player.get_status()?;
+        let queue = player.get_queue()?;
         let cached_queue_time_total = queue.iter().filter_map(|s| s.duration).sum();
 
         if !supported_commands.contains("albumart") || !supported_commands.contains("readpicture") {
@@ -116,7 +114,7 @@ impl Ctx {
         scheduler.start();
         Ok(Self {
             ytdlp_manager: YtDlpManager::new(work_sender.clone()),
-            mpd_version: client.version(),
+            mpd_version: player.version(),
             lrc_index: LrcIndex::default(),
             config: std::sync::Arc::new(config),
             status,
@@ -167,9 +165,12 @@ impl Ctx {
                     // what exactly is wrong.
                     self.command(|client| {
                         if let Err(err) = client.sticker("", "test") {
+                            let msg = err.downcast_ref::<crate::mpd::errors::MpdError>()
+                                .map(|e| e.detail_or_display())
+                                .unwrap_or_else(|| err.to_string());
                             status_error!(
                                 "Stickers are not supported by MPD server: '{}'",
-                                err.detail_or_display()
+                                msg
                             );
                         } else {
                             status_error!("Stickers are not supported by MPD server");
@@ -194,7 +195,7 @@ impl Ctx {
 
     pub(crate) fn query_sync<T: Send + Sync + 'static>(
         &self,
-        on_done: impl FnOnce(&mut Client<'_>) -> Result<T> + Send + 'static,
+        on_done: impl FnOnce(&mut dyn Player) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let (tx, rx) = bounded(1);
         let query = MpdQuerySync {
@@ -220,7 +221,7 @@ impl Ctx {
     #[builder(finish_fn(name = query))]
     pub(crate) fn query(
         &self,
-        #[builder(finish_fn)] on_done: impl FnOnce(&mut Client<'_>) -> Result<MpdQueryResult>
+        #[builder(finish_fn)] on_done: impl FnOnce(&mut dyn Player) -> Result<MpdQueryResult>
         + Send
         + 'static,
         id: &'static str,
@@ -235,7 +236,7 @@ impl Ctx {
 
     pub(crate) fn command(
         &self,
-        callback: impl FnOnce(&mut Client<'_>) -> Result<()> + Send + 'static,
+        callback: impl FnOnce(&mut dyn Player) -> Result<()> + Send + 'static,
     ) {
         if let Err(err) = self
             .client_request_sender

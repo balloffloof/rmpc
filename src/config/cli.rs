@@ -19,6 +19,9 @@ pub struct Args {
     #[arg(long, exclusive = true)]
     /// Skip user config and start with defaults, must be the only argument
     pub clean: bool,
+    #[arg(long)]
+    /// Use Spotify instead of MPD
+    pub spotify: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
     #[arg(short, long)]
@@ -332,6 +335,8 @@ pub enum Command {
         channel: String,
         content: String,
     },
+    /// Login to Spotify
+    SpotifyLogin,
 }
 
 #[derive(Subcommand, Clone, Debug, PartialEq, strum::EnumDiscriminants, strum::Display)]

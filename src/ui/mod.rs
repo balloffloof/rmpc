@@ -33,13 +33,12 @@ use crate::{
     core::{
         command::{create_env, run_external},
         config_watcher::ERROR_CONFIG_MODAL_ID,
+        player::Enqueue,
     },
     ctx::{Ctx, FETCH_SONG_STICKERS, LIKE_STICKER, RATING_STICKER},
     mpd::{
         commands::{State, idle::IdleEvent},
-        errors::{ErrorCode, MpdError, MpdFailureResponse},
-        mpd_client::{MpdClient, MpdCommand, ValueChange},
-        proto_client::ProtoClient,
+        mpd_client::ValueChange,
         version::Version,
     },
     shared::{
@@ -49,7 +48,6 @@ use crate::{
         keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::MouseEvent,
-        mpd_client_ext::{Enqueue, MpdClientExt},
         ytdlp::YtDlpHost,
     },
     ui::{
@@ -258,25 +256,15 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::Partition { name: Some(name), autocreate } => {
                     let name = name.clone();
                     let autocreate = *autocreate;
-                    ctx.command(move |client| {
-                        match client.switch_to_partition(&name) {
-                            Ok(()) => {}
-                            Err(MpdError::Mpd(MpdFailureResponse {
-                                code: ErrorCode::NoExist,
-                                ..
-                            })) if autocreate => {
-                                client.new_partition(&name)?;
-                                client.switch_to_partition(&name)?;
-                            }
-                            err @ Err(_) => err?,
-                        }
+                    ctx.command(move |player| {
+                        player.switch_to_partition_with_autocreate(&name, autocreate)?;
                         Ok(())
                     });
                 }
                 GlobalAction::Partition { name: None, .. } => {
-                    let result = ctx.query_sync(move |client| {
+                    let result: Vec<String> = ctx.query_sync(move |client| {
                         let partitions = client.list_partitions()?;
-                        Ok(partitions.0)
+                        Ok(partitions)
                     })?;
                     let modal = MenuModal::new(ctx)
                         .width(60)
@@ -298,14 +286,14 @@ impl<'ui> Ui<'ui> {
                         .multi_section(ctx, |section| {
                             let mut section = section
                                 .add_action("Switch", |ctx, label| {
-                                    ctx.command(move |client| {
-                                        client.switch_to_partition(&label)?;
+                                    ctx.command(move |player| {
+                                        player.switch_to_partition(&label)?;
                                         Ok(())
                                     });
                                 })
                                 .add_action("Delete", |ctx, label| {
-                                    ctx.command(move |client| {
-                                        client.delete_partition(&label)?;
+                                    ctx.command(move |player| {
+                                        player.delete_partition(&label)?;
                                         Ok(())
                                     });
                                 });
@@ -323,12 +311,8 @@ impl<'ui> Ui<'ui> {
                         .input_section(ctx, "New partition:", |section| {
                             let section = section.action(|ctx, value| {
                                 if !value.is_empty() {
-                                    ctx.command(move |client| {
-                                        client.send_start_cmd_list()?;
-                                        client.send_new_partition(&value)?;
-                                        client.send_switch_to_partition(&value)?;
-                                        client.send_execute_cmd_list()?;
-                                        client.read_ok()?;
+                                    ctx.command(move |player| {
+                                        player.create_and_switch_to_partition(&value)?;
                                         Ok(())
                                     });
                                 }
@@ -465,14 +449,14 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::ToggleRepeat => {
                     let repeat = !ctx.status.repeat;
                     ctx.command(move |client| {
-                        client.repeat(repeat)?;
+                        client.set_repeat(repeat)?;
                         Ok(())
                     });
                 }
                 GlobalAction::ToggleRandom => {
                     let random = !ctx.status.random;
                     ctx.command(move |client| {
-                        client.random(random)?;
+                        client.set_random(random)?;
                         Ok(())
                     });
                 }
@@ -480,9 +464,9 @@ impl<'ui> Ui<'ui> {
                     let single = ctx.status.single;
                     ctx.command(move |client| {
                         if client.version() < Version::new(0, 21, 0) {
-                            client.single(single.cycle_skip_oneshot())?;
+                            client.set_single(single.cycle_skip_oneshot())?;
                         } else {
-                            client.single(single.cycle())?;
+                            client.set_single(single.cycle())?;
                         }
                         Ok(())
                     });
@@ -491,9 +475,9 @@ impl<'ui> Ui<'ui> {
                     let consume = ctx.status.consume;
                     ctx.command(move |client| {
                         if client.version() < Version::new(0, 24, 0) {
-                            client.consume(consume.cycle_skip_oneshot())?;
+                            client.set_consume(consume.cycle_skip_oneshot())?;
                         } else {
-                            client.consume(consume.cycle())?;
+                            client.set_consume(consume.cycle())?;
                         }
                         Ok(())
                     });
@@ -501,14 +485,14 @@ impl<'ui> Ui<'ui> {
                 GlobalAction::ToggleSingleOnOff => {
                     let single = ctx.status.single;
                     ctx.command(move |client| {
-                        client.single(single.cycle_skip_oneshot())?;
+                        client.set_single(single.cycle_skip_oneshot())?;
                         Ok(())
                     });
                 }
                 GlobalAction::ToggleConsumeOnOff => {
                     let consume = ctx.status.consume;
                     ctx.command(move |client| {
-                        client.consume(consume.cycle_skip_oneshot())?;
+                        client.set_consume(consume.cycle_skip_oneshot())?;
                         Ok(())
                     });
                 }
@@ -520,7 +504,7 @@ impl<'ui> Ui<'ui> {
                         });
                     } else {
                         ctx.command(move |client| {
-                            client.play()?;
+                            client.play(None)?;
                             Ok(())
                         });
                     }
@@ -658,7 +642,7 @@ impl<'ui> Ui<'ui> {
                     ctx.query()
                         .id(OPEN_DECODERS_MODAL)
                         .replace_id(OPEN_DECODERS_MODAL)
-                        .query(|client| Ok(MpdQueryResult::Decoders(client.decoders()?.0)));
+                        .query(|client| Ok(MpdQueryResult::Decoders(client.decoders()?)));
                 }
                 GlobalAction::ShowCurrentSongInfo => {
                     if let Some((_, current_song)) = ctx.find_current_song_in_queue() {
@@ -962,6 +946,7 @@ impl<'ui> Ui<'ui> {
                 Panes::FrameCount(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Others(p) => p.on_event(&mut event, visible, ctx),
                 Panes::Cava(p) => p.on_event(&mut event, visible, ctx),
+                Panes::SpotifyDevices(p) => p.on_event(&mut event, visible, ctx),
                 // Property and the dummy TabContent pane do not need to receive events
                 Panes::Property(_) | Panes::TabContent => Ok(()),
                 // Empty pane is a noop, no events
@@ -1010,6 +995,7 @@ impl<'ui> Ui<'ui> {
                     #[cfg(debug_assertions)]
                     Panes::FrameCount(p) => p.on_query_finished(id, data, visible, ctx),
                     Panes::Cava(p) => p.on_query_finished(id, data, visible, ctx),
+                    Panes::SpotifyDevices(p) => p.on_query_finished(id, data, visible, ctx),
                     // Property and the dummy TabContent pane do not need to receive command
                     // notifications
                     Panes::Property(_) | Panes::TabContent => Ok(()),

@@ -29,16 +29,17 @@ use crate::{
     },
     core::command::{create_env, run_external},
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
-    mpd::{QueuePosition, client::Client, commands::Song, mpd_client::MpdClient},
+    mpd::{QueuePosition, commands::Song},
     shared::{
         args,
         ext::{btreeset_ranges::BTreeSetRanges, rect::RectExt},
         keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
-        mpd_client_ext::{Enqueue, MpdClientExt},
+        mpd_client_ext::resolve_and_enqueue,
         song_ext::SongsExt,
     },
+    core::player::Enqueue,
     ui::{
         UiEvent,
         dirstack::Dir,
@@ -227,7 +228,7 @@ impl QueuePane {
                     })
                     .item("Clear queue", |ctx| {
                         ctx.command(|client| {
-                            client.clear()?;
+                            client.clear_queue()?;
                             Ok(())
                         });
                         Ok(())
@@ -722,7 +723,7 @@ impl Pane for QueuePane {
                             ])
                             .action(Action::Single {
                                 on_confirm: Box::new(|ctx| {
-                                    ctx.command(|client| Ok(client.clear()?));
+                                    ctx.command(|client| Ok(client.clear_queue()?));
                                     Ok(())
                                 }),
                                 confirm_label: Some("Clear"),
@@ -993,7 +994,7 @@ impl Pane for QueuePane {
                     let (enqueue, _hovered_song_idx) = self.enqueue_items(options.all);
 
                     if !enqueue.is_empty() {
-                        Client::resolve_and_enqueue(
+                        resolve_and_enqueue(
                             ctx,
                             enqueue,
                             options.position,

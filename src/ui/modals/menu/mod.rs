@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use anyhow::Result;
 use input_section::InputSection;
@@ -14,16 +14,15 @@ use ratatui::{
 use crate::{
     config::keys::actions::{AddOpts, DuplicateStrategy},
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
+    core::player::{Enqueue, PlayerDelete},
     mpd::{
-        client::Client,
         errors::{ErrorCode, MpdError, MpdFailureResponse},
-        mpd_client::{MpdClient, MpdCommand, SingleOrRange},
-        proto_client::ProtoClient,
+        mpd_client::SingleOrRange,
     },
     shared::{
         cmp::StringCompare,
         macros::{modal, status_error, status_info, status_warn},
-        mpd_client_ext::{Enqueue, MpdClientExt as _},
+        mpd_client_ext::{resolve_and_enqueue},
     },
     ui::modals::{
         confirm_modal::{Action, ConfirmModal},
@@ -354,7 +353,7 @@ pub fn create_add_modal<'a>(
             for (label, options, (enqueue, hovered_idx)) in opts {
                 section = section.item(label, move |ctx| {
                     if !enqueue.is_empty() {
-                        Client::resolve_and_enqueue(
+                        resolve_and_enqueue(
                             ctx,
                             enqueue,
                             options.position,
@@ -575,11 +574,16 @@ pub fn delete_from_playlist_or_show_confirmation(
     let Some(songs_in_playlist) =
         ctx.query_sync(move |client| match client.list_playlist_info(&pl_name, None) {
             Ok(val) => Ok(Some(val.into_iter().map(|s| s.file).collect_vec())),
-            Err(MpdError::Mpd(MpdFailureResponse { code: ErrorCode::NoExist, .. })) => {
-                status_warn!("Cannot remove song(s) from playlist, playlist does not exist");
-                Ok(None)
+            Err(err) => {
+                if let Some(MpdError::Mpd(MpdFailureResponse { code: ErrorCode::NoExist, .. })) =
+                    err.downcast_ref::<MpdError>()
+                {
+                    status_warn!("Cannot remove song(s) from playlist, playlist does not exist");
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
             }
-            Err(err) => Err(err.into()),
         })?
     else {
         return Ok(());
@@ -602,13 +606,16 @@ pub fn delete_from_playlist_or_show_confirmation(
         format!("Remove {songs_to_remove} song(s) from playlist \"{playlist_name}\"?");
 
     let delete_songs = move |ctx: &Ctx| {
+        let playlist_name: Arc<str> = Arc::from(playlist_name.as_str());
+        let items = songs_to_remove_in_playlist
+            .into_iter()
+            .map(|(idx, _)| PlayerDelete::SongInPlaylist {
+                playlist: Arc::clone(&playlist_name),
+                range: SingleOrRange::single(idx),
+            })
+            .collect();
         ctx.command(move |client| {
-            client.send_start_cmd_list()?;
-            for (idx, _path) in songs_to_remove_in_playlist.iter().rev() {
-                client.send_delete_from_playlist(&playlist_name, &SingleOrRange::single(*idx))?;
-            }
-            client.send_execute_cmd_list()?;
-            client.read_ok()?;
+            client.delete_multiple(items)?;
             status_info!("Removed {songs_to_remove} song(s) from playlist \"{playlist_name}\"",);
             Ok(())
         });

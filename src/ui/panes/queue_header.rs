@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     config::theme::properties::{Property, PropertyKindOrText, SongProperty},
     ctx::Ctx,
-    mpd::{commands::Song, mpd_client::MpdCommand, proto_client::ProtoClient},
+    mpd::commands::Song,
     shared::{
         cmp::StringCompare,
         keys::ActionEvent,
@@ -136,13 +136,8 @@ impl QueueHeaderPane {
             }
         };
 
-        ctx.command(move |client| {
-            client.send_start_cmd_list()?;
-            for swap in swaps {
-                client.send_swap_position(swap.0, swap.1)?;
-            }
-            client.send_execute_cmd_list()?;
-            client.read_ok()?;
+        ctx.command(move |player| {
+            player.swap_positions(swaps)?;
             Ok(())
         });
 

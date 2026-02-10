@@ -23,11 +23,10 @@ use crate::{
     },
     core::command::{create_env, run_external},
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
+    core::player::Enqueue,
     mpd::{
-        client::Client,
         commands::Song,
-        mpd_client::{Filter, FilterKind, MpdClient, MpdCommand},
-        proto_client::ProtoClient,
+        mpd_client::{Filter, FilterKind},
         version::Version,
     },
     shared::{
@@ -35,7 +34,7 @@ use crate::{
         keys::ActionEvent,
         macros::{modal, status_error, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
-        mpd_client_ext::{Enqueue, MpdClientExt},
+        mpd_client_ext::resolve_and_enqueue,
     },
     ui::{
         UiEvent,
@@ -269,12 +268,7 @@ impl SearchPane {
                         (None, None) => HashSet::new(),
                     };
 
-                    client.send_start_cmd_list()?;
-                    for uri in uris {
-                        client.send_lsinfo(Some(&uri))?;
-                    }
-                    client.send_execute_cmd_list()?;
-                    let data: Vec<Song> = client.read_response()?;
+                    let data = client.get_songs_info(uris.into_iter().collect())?;
 
                     Ok(MpdQueryResult::SearchResult { data })
                 },
@@ -411,15 +405,15 @@ impl SearchPane {
                 // Modal while we are on search column does not support all options. It can
                 // be implemented later.
                 CommonAction::AddOptions { kind: AddKind::Modal(_) } => {}
-                CommonAction::AddOptions { kind: AddKind::Action(opts) } if opts.all => {
-                    let (_, enqueue) = self.enqueue(opts.all);
+                CommonAction::AddOptions { kind: AddKind::Action(options) } if options.all => {
+                    let (_, enqueue) = self.enqueue(options.all);
                     if !enqueue.is_empty() {
                         let current_song_idx = ctx.find_current_song_in_queue().map(|(i, _)| i);
-                        Client::resolve_and_enqueue(
+                        resolve_and_enqueue(
                             ctx,
                             enqueue,
-                            opts.position,
-                            opts.autoplay,
+                            options.position,
+                            options.autoplay,
                             current_song_idx,
                             None,
                         );
@@ -636,7 +630,7 @@ impl SearchPane {
                     let current_song_idx = ctx.find_current_song_in_queue().map(|(i, _)| i);
 
                     if !items.is_empty() {
-                        Client::resolve_and_enqueue(
+                        resolve_and_enqueue(
                             ctx,
                             items,
                             Position::Replace,
@@ -656,7 +650,7 @@ impl SearchPane {
                     if !enqueue.is_empty() {
                         let current_song_idx = ctx.find_current_song_in_queue().map(|(i, _)| i);
 
-                        Client::resolve_and_enqueue(
+                        resolve_and_enqueue(
                             ctx,
                             enqueue,
                             opts.position,

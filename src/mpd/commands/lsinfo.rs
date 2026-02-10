@@ -16,6 +16,14 @@ impl LsInfo {
             LsInfoEntry::Playlist(_) => None,
         })
     }
+
+    pub fn into_songs(self) -> impl Iterator<Item = Song> {
+        self.into_iter().filter_map(|item| match item {
+            LsInfoEntry::File(song) => Some(song),
+            LsInfoEntry::Dir(_) => None,
+            LsInfoEntry::Playlist(_) => None,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

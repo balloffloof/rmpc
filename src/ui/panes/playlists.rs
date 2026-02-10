@@ -10,10 +10,10 @@ use crate::{
     MpdQueryResult,
     config::tabs::PaneType,
     ctx::Ctx,
+    core::player::{Player, PlayerDelete},
     mpd::{
-        client::Client,
         commands::Song,
-        mpd_client::{MpdClient, SingleOrRange},
+        mpd_client::SingleOrRange,
     },
     shared::{
         cmp::StringCompare,
@@ -21,7 +21,6 @@ use crate::{
         keys::ActionEvent,
         macros::{modal, status_info},
         mouse_event::MouseEvent,
-        mpd_client_ext::MpdDelete,
     },
     status_warn,
     ui::{
@@ -305,10 +304,10 @@ impl BrowserPane<DirOrSong> for PlaylistsPane {
     fn list_songs_in_item(
         &self,
         item: DirOrSong,
-    ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Clone + 'static {
-        move |client| {
+    ) -> impl FnOnce(&mut dyn Player) -> Result<Vec<Song>> + Clone + 'static {
+        move |player| {
             Ok(match item {
-                DirOrSong::Dir { name, .. } => client.list_playlist_info(&name, None)?,
+                DirOrSong::Dir { name, .. } => player.list_playlist_info(&name, None)?,
                 DirOrSong::Song(song) => vec![song.clone()],
             })
         }
@@ -360,14 +359,14 @@ impl BrowserPane<DirOrSong> for PlaylistsPane {
         Ok(())
     }
 
-    fn delete<'a>(&self, items: impl Iterator<Item = (usize, &'a DirOrSong)>) -> Vec<MpdDelete> {
+    fn delete<'a>(&self, items: impl Iterator<Item = (usize, &'a DirOrSong)>) -> Vec<PlayerDelete> {
         match self.stack().path().as_slice() {
             [playlist] => {
                 let playlist: Arc<str> = Arc::from(playlist.as_str());
                 items
                     .filter_map(|(idx, item)| match item {
                         DirOrSong::Dir { .. } => None,
-                        DirOrSong::Song(_) => Some(MpdDelete::SongInPlaylist {
+                        DirOrSong::Song(_) => Some(PlayerDelete::SongInPlaylist {
                             playlist: Arc::clone(&playlist),
                             range: SingleOrRange::single(idx),
                         }),
@@ -376,7 +375,7 @@ impl BrowserPane<DirOrSong> for PlaylistsPane {
             }
             [] => items
                 .filter_map(|(_, item)| match item {
-                    DirOrSong::Dir { name, .. } => Some(MpdDelete::Playlist { name: name.clone() }),
+                    DirOrSong::Dir { name, .. } => Some(PlayerDelete::Playlist { name: name.clone() }),
                     DirOrSong::Song(_) => None,
                 })
                 .collect_vec(),

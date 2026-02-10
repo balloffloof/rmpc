@@ -13,15 +13,17 @@ use crate::{
         actions::{AddKind, AutoplayKind, DeleteKind, Position, RateKind, SaveKind},
     },
     ctx::{Ctx, LIKE_STICKER, RATING_STICKER},
-    mpd::{client::Client, commands::Song, mpd_client::MpdClient},
+    core::player::Player,
+    mpd::commands::Song,
     shared::{
         args,
         keys::ActionEvent,
         macros::{modal, status_info, status_warn},
         mouse_event::{MouseEvent, MouseEventKind, calculate_scrollbar_position},
-        mpd_client_ext::{Enqueue, MpdClientExt, MpdDelete},
+        mpd_client_ext::resolve_and_enqueue,
         mpd_query::EXTERNAL_COMMAND,
     },
+    core::player::{Enqueue, PlayerDelete},
     ui::{
         dirstack::{DirStack, DirStackItem, WalkDirStackItem},
         input::InputResultEvent,
@@ -87,7 +89,7 @@ where
                     (Position::EndOfQueue, AutoplayKind::None)
                 };
 
-                Client::resolve_and_enqueue(ctx, items, position, autoplay, None, hovered_song_idx);
+                resolve_and_enqueue(ctx, items, position, autoplay, None, hovered_song_idx);
             }
         } else {
             self.stack_mut().enter();
@@ -99,12 +101,12 @@ where
     fn list_songs_in_item(
         &self,
         item: T,
-    ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Send + Sync + Clone + 'static;
+    ) -> impl FnOnce(&mut dyn Player) -> Result<Vec<Song>> + Send + Sync + Clone + 'static;
 
     fn list_songs_in_items(
         &self,
         all: bool,
-    ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Send + Sync + Clone + 'static {
+    ) -> impl FnOnce(&mut dyn Player) -> Result<Vec<Song>> + Send + Sync + Clone + 'static {
         let list_songs_fns =
             self.items(all).map(|(_, item)| self.list_songs_in_item(item.to_owned())).collect_vec();
         |client| {
@@ -172,7 +174,7 @@ where
         }
     }
 
-    fn delete<'a>(&self, item: impl Iterator<Item = (usize, &'a T)>) -> Vec<MpdDelete> {
+    fn delete<'a>(&self, item: impl Iterator<Item = (usize, &'a T)>) -> Vec<PlayerDelete> {
         Vec::new()
     }
 
@@ -541,10 +543,9 @@ where
             CommonAction::AddOptions { kind: AddKind::Action(options) } => {
                 let (enqueue, hovered_idx) = self.enqueue_items(options.all);
                 if !enqueue.is_empty() {
-                    let queue_len = ctx.queue.len();
                     let current_song_idx = ctx.find_current_song_in_queue().map(|(i, _)| i);
 
-                    Client::resolve_and_enqueue(
+                    resolve_and_enqueue(
                         ctx,
                         enqueue,
                         options.position,
@@ -710,7 +711,7 @@ where
         }
     }
 
-    fn delete_items(&self, all: bool) -> Vec<MpdDelete> {
+    fn delete_items(&self, all: bool) -> Vec<PlayerDelete> {
         self.delete(self.items(all))
     }
 

@@ -13,10 +13,10 @@ use crate::{
         tabs::PaneType,
     },
     ctx::Ctx,
+    core::player::Player,
     mpd::{
-        client::Client,
         commands::Song,
-        mpd_client::{Filter, FilterKind, MpdClient, Tag},
+        mpd_client::{Filter, FilterKind, Tag},
     },
     shared::{
         cmp::StringCompare,
@@ -176,7 +176,7 @@ impl Pane for TagBrowserPane {
             let target = self.target_pane.clone();
             ctx.query().id(INIT).replace_id(INIT).target(target).query(move |client| {
                 let result = client.list_tag(root_tag, None).context("Cannot list artists")?;
-                Ok(MpdQueryResult::LsInfo { data: result.0, path: None })
+                Ok(MpdQueryResult::LsInfo { data: result, path: None })
             });
 
             self.initialized = true;
@@ -193,7 +193,7 @@ impl Pane for TagBrowserPane {
                 self.stack = DirStack::default();
                 ctx.query().id(INIT).replace_id(INIT).target(target).query(move |client| {
                     let result = client.list_tag(root_tag, None).context("Cannot list artists")?;
-                    Ok(MpdQueryResult::LsInfo { data: result.0, path: None })
+                    Ok(MpdQueryResult::LsInfo { data: result, path: None })
                 });
             }
             UiEvent::Reconnected => {
@@ -282,7 +282,7 @@ impl BrowserPane<DirOrSong> for TagBrowserPane {
     fn list_songs_in_item(
         &self,
         item: DirOrSong,
-    ) -> impl FnOnce(&mut Client<'_>) -> Result<Vec<Song>> + Clone + 'static {
+    ) -> impl FnOnce(&mut dyn Player) -> Result<Vec<Song>> + Clone + 'static {
         let root_tag = self.root_tag.clone();
         let separator = self.separator.clone();
         let path = self.stack().path().to_owned();

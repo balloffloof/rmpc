@@ -25,6 +25,7 @@ use ratatui::{
     widgets::Block,
 };
 use search::SearchPane;
+use spotify_devices::SpotifyDevicesPane;
 use strum::{Display, IntoDiscriminant};
 use tabs::TabsPane;
 use tag_browser::TagBrowserPane;
@@ -90,6 +91,7 @@ pub mod property;
 pub mod queue;
 pub mod queue_header;
 pub mod search;
+pub mod spotify_devices;
 pub mod tabs;
 pub mod tag_browser;
 pub mod volume;
@@ -114,6 +116,7 @@ pub enum Panes<'pane_ref, 'pane> {
     #[cfg(debug_assertions)]
     FrameCount(&'pane_ref mut FrameCountPane),
     TabContent,
+    SpotifyDevices(&'pane_ref mut SpotifyDevicesPane),
     Property(PropertyPane<'pane_ref>),
     Others(&'pane_ref mut Box<dyn BoxedPane>),
     Cava(&'pane_ref mut CavaPane),
@@ -144,6 +147,7 @@ pub struct PaneContainer<'panes> {
     pub cava: CavaPane,
     #[cfg(debug_assertions)]
     pub frame_count: FrameCountPane,
+    pub spotify_devices: SpotifyDevicesPane,
     pub empty: EmptyPane,
     pub others: HashMap<PaneType, Box<dyn BoxedPane>>,
 }
@@ -169,6 +173,7 @@ impl<'panes> PaneContainer<'panes> {
             cava: CavaPane::new(ctx),
             #[cfg(debug_assertions)]
             frame_count: FrameCountPane::new(),
+            spotify_devices: SpotifyDevicesPane::new(ctx),
             empty: EmptyPane,
             others: Self::init_other_panes(ctx).collect(),
         })
@@ -223,6 +228,7 @@ impl<'panes> PaneContainer<'panes> {
             PaneType::Header => Ok(Panes::Header(&mut self.header)),
             PaneType::Tabs => Ok(Panes::Tabs(&mut self.tabs)),
             PaneType::TabContent => Ok(Panes::TabContent),
+            PaneType::SpotifyDevices => Ok(Panes::SpotifyDevices(&mut self.spotify_devices)),
             #[cfg(debug_assertions)]
             PaneType::FrameCount => Ok(Panes::FrameCount(&mut self.frame_count)),
             PaneType::Property { content, align, scroll_speed } => Ok(Panes::Property(
@@ -263,6 +269,7 @@ macro_rules! pane_call {
             Panes::Header(s) => s.$fn($($param),+),
             Panes::Tabs(s) => s.$fn($($param),+),
             Panes::TabContent => Ok(()),
+            Panes::SpotifyDevices(s) => s.$fn($($param),+),
             #[cfg(debug_assertions)]
             Panes::FrameCount(s) => s.$fn($($param),+),
             Panes::Property(s) => s.$fn($($param),+),

@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use anyhow::Context;
@@ -9,45 +8,47 @@ use itertools::Itertools;
 
 use crate::{
     config::keys::actions::{AddOpts, AutoplayKind, Position},
+    core::player::{Enqueue, PlayerDelete},
     ctx::Ctx,
     mpd::{
         QueuePosition,
         commands::{IdleEvent, State, Status, outputs::Outputs, stickers::Stickers},
         errors::{ErrorCode, MpdError, MpdFailureResponse},
-        mpd_client::{Filter, FilterKind, MpdClient, MpdCommand, SingleOrRange, Tag},
+        mpd_client::{Filter, MpdClient, MpdCommand},
         proto_client::ProtoClient,
     },
     shared::macros::{status_info, status_warn},
 };
 
-pub trait MpdClientExt {
-    fn resolve_and_enqueue(
-        ctx: &Ctx,
-        items: Vec<Enqueue>,
-        position: Position,
-        autoplay: AutoplayKind,
-        current_song_idx: Option<usize>,
-        hovered_song_idx: Option<usize>,
+pub fn resolve_and_enqueue(
+    ctx: &Ctx,
+    items: Vec<Enqueue>,
+    position: Position,
+    autoplay: AutoplayKind,
+    current_song_idx: Option<usize>,
+    hovered_song_idx: Option<usize>,
+) {
+    let opts = AddOpts { autoplay, position, all: false };
+    let replace = matches!(position, Position::Replace);
+    let (autoplay_idx, position) = match opts.autoplay_idx_and_queue_position(
+        &ctx.queue,
+        current_song_idx,
+        hovered_song_idx,
     ) {
-        let opts = AddOpts { autoplay, position, all: false };
-        let replace = matches!(position, Position::Replace);
-        let (autoplay_idx, position) = match opts.autoplay_idx_and_queue_position(
-            &ctx.queue,
-            current_song_idx,
-            hovered_song_idx,
-        ) {
-            Ok(v) => v,
-            Err(err) => {
-                status_warn!("{}", err);
-                return;
-            }
-        };
+        Ok(v) => v,
+        Err(err) => {
+            status_warn!("{}", err);
+            return;
+        }
+    };
 
-        ctx.command(move |client| {
-            client.enqueue_multiple(items, autoplay_idx, position, replace)?;
-            Ok(())
-        });
-    }
+    ctx.command(move |client| {
+        client.enqueue_multiple(items, autoplay_idx, position, replace)?;
+        Ok(())
+    });
+}
+
+pub trait MpdClientExt {
     fn play_position_safe(&mut self, queue_len: usize) -> Result<(), MpdError>;
     fn enqueue_multiple(
         &mut self,
@@ -56,7 +57,7 @@ pub trait MpdClientExt {
         position: Option<QueuePosition>,
         replace: bool,
     ) -> Result<(), MpdError>;
-    fn delete_multiple(&mut self, items: Vec<MpdDelete>) -> Result<(), MpdError>;
+    fn delete_multiple(&mut self, items: Vec<PlayerDelete>) -> Result<(), MpdError>;
     fn add_to_playlist_multiple(
         &mut self,
         playlist_name: &str,
@@ -88,19 +89,6 @@ pub trait MpdClientExt {
     ) -> Result<(), MpdError>;
 }
 
-#[derive(Debug, Clone)]
-pub enum MpdDelete {
-    SongInPlaylist { playlist: Arc<str>, range: SingleOrRange },
-    Playlist { name: String },
-}
-
-#[allow(dead_code, reason = "Search is currently unused")]
-#[derive(Debug, Clone)]
-pub enum Enqueue {
-    File { path: String },
-    Playlist { name: String },
-    Find { filter: Vec<(Tag, FilterKind, String)> },
-}
 
 impl<T: MpdClient + MpdCommand + ProtoClient> MpdClientExt for T {
     fn play_position_safe(&mut self, queue_len: usize) -> Result<(), MpdError> {
@@ -174,7 +162,7 @@ impl<T: MpdClient + MpdCommand + ProtoClient> MpdClientExt for T {
         Ok(())
     }
 
-    fn delete_multiple(&mut self, items: Vec<MpdDelete>) -> Result<(), MpdError> {
+    fn delete_multiple(&mut self, items: Vec<PlayerDelete>) -> Result<(), MpdError> {
         let items_len = items.len();
         if items_len == 0 {
             return Ok(());
@@ -183,10 +171,10 @@ impl<T: MpdClient + MpdCommand + ProtoClient> MpdClientExt for T {
         self.send_start_cmd_list()?;
         for item in items.into_iter().rev() {
             match item {
-                MpdDelete::SongInPlaylist { playlist, range } => {
+                PlayerDelete::SongInPlaylist { playlist, range } => {
                     self.send_delete_from_playlist(&playlist, &range)?;
                 }
-                MpdDelete::Playlist { name } => {
+                PlayerDelete::Playlist { name } => {
                     self.send_delete_playlist(&name)?;
                 }
             }

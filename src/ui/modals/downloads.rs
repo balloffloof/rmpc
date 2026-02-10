@@ -22,7 +22,6 @@ use crate::{
         id::{self, Id},
         keys::ActionEvent,
         mouse_event::{MouseEvent, MouseEventKind},
-        mpd_client_ext::MpdClientExt,
         ytdlp::{DownloadId, DownloadState},
     },
     ui::{
